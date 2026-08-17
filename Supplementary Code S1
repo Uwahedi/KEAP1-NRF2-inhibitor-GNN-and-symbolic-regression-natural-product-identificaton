@@ -1,0 +1,159 @@
+Supplementary Code S1
+Binding Site Validation Using the Native KEAP1–NRF2 Complex (PDB: 2FLU)
+
+Purpose
+This script identifies the native protein–protein interaction (PPI) interface between KEAP1 and the NRF2 ETGE peptide using the crystal structure (PDB ID:2FLU). The identified interface residues are compared with the docking pocket used during virtual screening to validate the biological relevance of the selected binding site.
+
+Input
+1. Native crystal structure (2FLU)
+2. User-defined docking pocket residues
+
+Output
+1. List of interface residues
+2. Pocket overlap statistics
+3. Hotspot residue identification
+4. CSV file containing all interface residues
+
+Software
+Python 3.11
+Biopython >=1.85
+Pandas >=2.2
+
+Author
+Umair Wahedi et al.
+
+Citation
+If this code is used, please cite the associated manuscript.
+========================================================================
+import logging
+import os
+import platform
+import sys
+import time
+from pathlib import Path
+import pandas as pd
+import Bio
+from Bio.PDB import (
+    NeighborSearch,
+    PDBList,
+    PDBParser,
+)
+##############################################################################
+ Configuration
+#############################################################################
+PDB_ID = "2FLU"
+DISTANCE_CUTOFF = 5.0
+OUTPUT_FILE = "Binding_Site_Validation.csv"
+HOTSPOT_RESIDUES = [380, 415, 483, 508, 555]
+USER_POCKET_RESIDUES = [
+    "TYR",
+    "SER",
+    "GLY",
+    "ARG",
+    "ASN",
+    "ARG",
+    "LEU",
+    "ARG",
+    "SER",
+    "GLY",
+    "VAL",
+    "GLU",
+    "ALA",
+    "GLY"
+]
+
+##############################################################################
+Logging
+##############################################################################
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+logger = logging.getLogger(__name__)
+##############################################################################
+ Print Environment Information
+##############################################################################
+logger.info("===================================================")
+logger.info("Binding Site Validation")
+logger.info("===================================================")
+logger.info(f"Python Version    : {platform.python_version()}")
+logger.info(f"Biopython Version : {Bio.__version__}")
+logger.info(f"PDB Structure     : {PDB_ID}")
+logger.info(f"Distance Cutoff   : {DISTANCE_CUTOFF:.1f} Å")
+
+###############################################################################
+Helper Functions
+###############################################################################
+
+def get_chains_sorted_by_length(structure):
+    """
+    Return chains sorted according to residue count.
+    Parameters
+    ----------
+    structure : Bio.PDB.Structure
+    Returns
+    -------
+    list
+        Chains ordered from longest to shortest.
+    """
+    model = structure[0]
+    chains = list(model.get_chains())
+    chains.sort(
+        key=lambda chain: len(list(chain.get_residues())),
+        reverse=True
+    )
+    return chains
+def get_interface_residues(
+    structure,
+    receptor_chain_id,
+    peptide_chain_id,
+    cutoff=DISTANCE_CUTOFF
+):
+   """
+    Identify receptor residues located within the specified cutoff
+    distance from the peptide.
+    Parameters
+    ----------
+    structure : Bio.PDB.Structure
+    receptor_chain_id : str
+    peptide_chain_id : str
+    cutoff : float
+    Returns
+    -------
+    list
+        Sorted list of interface residues.
+   """
+    model = structure[0]
+    receptor = model[receptor_chain_id]
+    peptide = model[peptide_chain_id]
+    peptide_atoms = list(peptide.get_atoms())
+    neighbor_search = NeighborSearch(peptide_atoms)
+    interface = set()
+    logger.info(
+       f"Scanning interface "
+        f"(Chain {receptor_chain_id} vs Chain {peptide_chain_id})"
+    )
+    for residue in receptor:
+        if residue.get_resname() == "HOH":
+           continue
+        contact = False
+        for atom in residue:
+            neighbours = neighbor_search.search(
+                atom.coord,
+                cutoff,
+                level="A"
+            )
+            if neighbours:
+                contact = True
+               break
+        if contact:
+            interface.add(
+                (
+                    residue.get_resname(),
+                    residue.get_id()[1]
+                )
+            )
+    return sorted(
+        interface,
+        key=lambda x: x[1]
+    )
