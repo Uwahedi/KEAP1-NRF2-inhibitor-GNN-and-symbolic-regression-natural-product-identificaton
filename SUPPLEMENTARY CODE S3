@@ -1,0 +1,996 @@
+SUPPLEMENTARY CODE S3
+# Symbolic Regression for Multi-Parameter Ranking of KEAP1 Inhibitors
+#
+# Purpose:
+# Develop an interpretable mathematical model relating structural/energetic
+# descriptors to the consensus prioritisation score used for KEAP1 inhibitor
+# selection.
+#
+# IMPORTANT:
+# The symbolic-regression model is an exploratory ranking model.
+# It does NOT establish biological activity or experimental efficacy.
+###############################################################################
+
+import logging
+import platform
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from sklearn.metrics import (
+    r2_score,
+    mean_squared_error,
+    mean_absolute_error
+)
+from sklearn.model_selection import LeaveOneOut
+from gplearn.genetic import SymbolicRegressor
+
+
+# =============================================================================
+# 1. REPRODUCIBILITY
+# =============================================================================
+
+RANDOM_STATE = 42
+N_Y_SCRAMBLES = 100
+
+np.random.seed(RANDOM_STATE)
+
+
+# =============================================================================
+# 2. LOGGING
+# =============================================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+
+logger = logging.getLogger(__name__)
+
+logger.info("=" * 80)
+logger.info("KEAP1 SYMBOLIC REGRESSION CONSENSUS MODEL")
+logger.info("=" * 80)
+logger.info(f"Python version: {platform.python_version()}")
+
+
+# =============================================================================
+# 3. PATHS
+# =============================================================================
+
+WORKING_DIRECTORY = Path.cwd()
+
+DATA_FILE = WORKING_DIRECTORY / "SymbolicRegressionDataset.csv"
+
+OUTPUT_FOLDER = WORKING_DIRECTORY / "SymbolicRegression_Output"
+OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
+
+logger.info(f"Input file : {DATA_FILE}")
+logger.info(f"Output dir : {OUTPUT_FOLDER}")
+
+
+# =============================================================================
+# 4. LOAD DATA
+# =============================================================================
+
+logger.info("Loading symbolic-regression dataset...")
+
+df = pd.read_csv(DATA_FILE)
+
+logger.info(f"Initial dataset size: {len(df)} compounds")
+
+
+# =============================================================================
+# 5. REQUIRED VARIABLES
+# =============================================================================
+
+FEATURES = [
+    "Binding_Energy",
+    "SASA_Burial",
+    "Valine_Contacts",
+    "Ligand_Efficiency"
+]
+
+TARGET = "Consensus_Score"
+
+REQUIRED_COLUMNS = ["Compound"] + FEATURES + [TARGET]
+
+missing_columns = [
+    column for column in REQUIRED_COLUMNS
+    if column not in df.columns
+]
+
+if missing_columns:
+    raise ValueError(
+        "The following required columns are missing:\n"
+        + "\n".join(missing_columns)
+    )
+
+
+# =============================================================================
+# 6. DATA CLEANING
+# =============================================================================
+
+df = df[REQUIRED_COLUMNS].copy()
+
+df = df.replace([np.inf, -np.inf], np.nan)
+
+initial_n = len(df)
+
+df = df.dropna(
+    subset=FEATURES + [TARGET]
+).reset_index(drop=True)
+
+removed_n = initial_n - len(df)
+
+logger.info(f"Removed incomplete observations: {removed_n}")
+logger.info(f"Final dataset size: {len(df)} compounds")
+
+
+if len(df) < 10:
+    raise ValueError(
+        "Dataset is too small for reliable symbolic regression."
+    )
+
+
+# =============================================================================
+# 7. FEATURE MATRIX AND TARGET
+# =============================================================================
+
+X = df[FEATURES].astype(float)
+y = df[TARGET].astype(float)
+
+logger.info("Features:")
+for feature in FEATURES:
+    logger.info(f"  - {feature}")
+
+logger.info(f"Target: {TARGET}")
+
+
+# =============================================================================
+# 8. SYMBOLIC REGRESSION FUNCTION
+# =============================================================================
+
+def create_symbolic_model(random_state=RANDOM_STATE):
+
+    return SymbolicRegressor(
+
+        population_size=5000,
+
+        generations=30,
+
+        stopping_criteria=0.001,
+
+        tournament_size=20,
+
+        p_crossover=0.70,
+
+        p_subtree_mutation=0.10,
+
+        p_hoist_mutation=0.05,
+
+        p_point_mutation=0.10,
+
+        max_samples=0.90,
+
+        parsimony_coefficient=0.001,
+
+        function_set=(
+            "add",
+            "sub",
+            "mul",
+            "div",
+            "sqrt",
+            "log",
+            "abs",
+            "neg",
+            "inv"
+        ),
+
+        metric="mse",
+
+        random_state=random_state,
+
+        verbose=0
+    )
+
+
+# =============================================================================
+# 9. FIT FINAL SYMBOLIC MODEL
+# =============================================================================
+
+logger.info("=" * 80)
+logger.info("FITTING SYMBOLIC REGRESSION MODEL")
+logger.info("=" * 80)
+
+model = create_symbolic_model()
+
+model.fit(X, y)
+
+
+# =============================================================================
+# 10. EXTRACT DISCOVERED EQUATION
+# =============================================================================
+
+equation = str(model._program)
+
+logger.info("Discovered symbolic equation:")
+logger.info(equation)
+
+with open(
+    OUTPUT_FOLDER / "Discovered_Symbolic_Equation.txt",
+    "w",
+    encoding="utf-8"
+) as f:
+
+    f.write(
+        "Symbolic Regression Equation\n"
+        "============================\n\n"
+    )
+
+    f.write(equation)
+
+
+# =============================================================================
+# 11. FULL-DATASET FIT PERFORMANCE
+# =============================================================================
+
+full_predictions = model.predict(X)
+
+training_r2 = r2_score(
+    y,
+    full_predictions
+)
+
+training_rmse = np.sqrt(
+    mean_squared_error(
+        y,
+        full_predictions
+    )
+)
+
+training_mae = mean_absolute_error(
+    y,
+    full_predictions
+)
+
+logger.info("=" * 80)
+logger.info("FULL DATASET PERFORMANCE")
+logger.info("=" * 80)
+
+logger.info(f"Training R²   : {training_r2:.4f}")
+logger.info(f"Training RMSE : {training_rmse:.4f}")
+logger.info(f"Training MAE  : {training_mae:.4f}")
+
+
+# =============================================================================
+# 12. LEAVE-ONE-OUT CROSS-VALIDATION
+# =============================================================================
+
+logger.info("=" * 80)
+logger.info("LEAVE-ONE-OUT CROSS-VALIDATION")
+logger.info("=" * 80)
+
+loo = LeaveOneOut()
+
+observed = []
+predicted = []
+compound_names = []
+
+for fold, (train_index, test_index) in enumerate(
+    loo.split(X),
+    start=1
+):
+
+    X_train = X.iloc[train_index]
+    X_test = X.iloc[test_index]
+
+    y_train = y.iloc[train_index]
+    y_test = y.iloc[test_index]
+
+    cv_model = create_symbolic_model(
+        random_state=RANDOM_STATE + fold
+    )
+
+    cv_model.fit(
+        X_train,
+        y_train
+    )
+
+    prediction = cv_model.predict(
+        X_test
+    )[0]
+
+    predicted.append(prediction)
+    observed.append(y_test.iloc[0])
+
+    compound_names.append(
+        df.iloc[test_index[0]]["Compound"]
+    )
+
+
+observed = np.asarray(observed)
+predicted = np.asarray(predicted)
+
+
+# =============================================================================
+# 13. LOOCV METRICS
+# =============================================================================
+
+cv_r2 = r2_score(
+    observed,
+    predicted
+)
+
+cv_rmse = np.sqrt(
+    mean_squared_error(
+        observed,
+        predicted
+    )
+)
+
+cv_mae = mean_absolute_error(
+    observed,
+    predicted
+)
+
+logger.info(f"LOOCV R²   : {cv_r2:.4f}")
+logger.info(f"LOOCV RMSE : {cv_rmse:.4f}")
+logger.info(f"LOOCV MAE  : {cv_mae:.4f}")
+
+
+# =============================================================================
+# 14. LOOCV PREDICTION TABLE
+# =============================================================================
+
+loocv_table = pd.DataFrame({
+
+    "Compound":
+        compound_names,
+
+    "Observed_Consensus_Score":
+        observed,
+
+    "Predicted_Consensus_Score":
+        predicted,
+
+    "Residual":
+        observed - predicted
+})
+
+loocv_table.to_csv(
+    OUTPUT_FOLDER / "LOOCV_Predictions.csv",
+    index=False
+)
+
+
+# =============================================================================
+# 15. LOOCV OBSERVED VS PREDICTED PLOT
+# =============================================================================
+
+plt.figure(figsize=(7, 7))
+
+plt.scatter(
+    observed,
+    predicted,
+    s=70,
+    alpha=0.8,
+    edgecolor="black"
+)
+
+minimum = min(
+    observed.min(),
+    predicted.min()
+)
+
+maximum = max(
+    observed.max(),
+    predicted.max()
+)
+
+plt.plot(
+    [minimum, maximum],
+    [minimum, maximum],
+    "--",
+    linewidth=2
+)
+
+plt.xlabel(
+    "Observed consensus score",
+    fontsize=12
+)
+
+plt.ylabel(
+    "LOOCV predicted consensus score",
+    fontsize=12
+)
+
+plt.title(
+    "Symbolic Regression: LOOCV",
+    fontsize=14
+)
+
+plt.text(
+    0.05,
+    0.95,
+    f"R² = {cv_r2:.3f}\n"
+    f"RMSE = {cv_rmse:.3f}\n"
+    f"MAE = {cv_mae:.3f}",
+    transform=plt.gca().transAxes,
+    verticalalignment="top",
+    bbox=dict(
+        boxstyle="round",
+        facecolor="white",
+        alpha=0.8
+    )
+)
+
+plt.tight_layout()
+
+plt.savefig(
+    OUTPUT_FOLDER / "LOOCV_Observed_vs_Predicted.png",
+    dpi=600,
+    bbox_inches="tight"
+)
+
+plt.close()
+
+
+# =============================================================================
+# 16. LOOCV RESIDUAL PLOT
+# =============================================================================
+
+residuals = observed - predicted
+
+plt.figure(figsize=(7, 5))
+
+plt.scatter(
+    predicted,
+    residuals,
+    s=70,
+    alpha=0.8,
+    edgecolor="black"
+)
+
+plt.axhline(
+    0,
+    linestyle="--",
+    linewidth=2
+)
+
+plt.xlabel(
+    "LOOCV predicted consensus score",
+    fontsize=12
+)
+
+plt.ylabel(
+    "Residual",
+    fontsize=12
+)
+
+plt.title(
+    "LOOCV residual distribution",
+    fontsize=14
+)
+
+plt.tight_layout()
+
+plt.savefig(
+    OUTPUT_FOLDER / "LOOCV_Residuals.png",
+    dpi=600,
+    bbox_inches="tight"
+)
+
+plt.close()
+
+
+# =============================================================================
+# 17. Y-SCRAMBLING
+# =============================================================================
+
+logger.info("=" * 80)
+logger.info(
+    f"Y-SCRAMBLING VALIDATION ({N_Y_SCRAMBLES} ITERATIONS)"
+)
+logger.info("=" * 80)
+
+yscramble_r2 = []
+yscramble_rmse = []
+yscramble_mae = []
+
+for iteration in range(N_Y_SCRAMBLES):
+
+    logger.info(
+        f"Y-scrambling iteration "
+        f"{iteration + 1}/{N_Y_SCRAMBLES}"
+    )
+
+    # Randomly permute the response variable
+    y_random = np.random.permutation(y.values)
+
+    random_model = create_symbolic_model(
+        random_state=1000 + iteration
+    )
+
+    random_model.fit(
+        X,
+        y_random
+    )
+
+    random_prediction = random_model.predict(X)
+
+    random_r2 = r2_score(
+        y_random,
+        random_prediction
+    )
+
+    random_rmse = np.sqrt(
+        mean_squared_error(
+            y_random,
+            random_prediction
+        )
+    )
+
+    random_mae = mean_absolute_error(
+        y_random,
+        random_prediction
+    )
+
+    yscramble_r2.append(random_r2)
+    yscramble_rmse.append(random_rmse)
+    yscramble_mae.append(random_mae)
+
+
+yscramble_r2 = np.asarray(yscramble_r2)
+yscramble_rmse = np.asarray(yscramble_rmse)
+yscramble_mae = np.asarray(yscramble_mae)
+
+
+# =============================================================================
+# 18. Y-SCRAMBLING SUMMARY
+# =============================================================================
+
+mean_scrambled_r2 = np.mean(yscramble_r2)
+std_scrambled_r2 = np.std(yscramble_r2)
+
+mean_scrambled_rmse = np.mean(yscramble_rmse)
+std_scrambled_rmse = np.std(yscramble_rmse)
+
+mean_scrambled_mae = np.mean(yscramble_mae)
+std_scrambled_mae = np.std(yscramble_mae)
+
+# Empirical probability of obtaining an R² at least as large
+# as the observed LOOCV R².
+scrambled_exceedances = np.sum(
+    yscramble_r2 >= cv_r2
+)
+
+empirical_p = (
+    scrambled_exceedances + 1
+) / (
+    N_Y_SCRAMBLES + 1
+)
+
+
+logger.info("=" * 80)
+logger.info("Y-SCRAMBLING RESULTS")
+logger.info("=" * 80)
+
+logger.info(
+    f"Observed LOOCV R² : {cv_r2:.4f}"
+)
+
+logger.info(
+    f"Scrambled R²      : "
+    f"{mean_scrambled_r2:.4f} ± "
+    f"{std_scrambled_r2:.4f}"
+)
+
+logger.info(
+    f"Scrambled RMSE    : "
+    f"{mean_scrambled_rmse:.4f} ± "
+    f"{std_scrambled_rmse:.4f}"
+)
+
+logger.info(
+    f"Scrambled MAE     : "
+    f"{mean_scrambled_mae:.4f} ± "
+    f"{std_scrambled_mae:.4f}"
+)
+
+logger.info(
+    f"Empirical p-value : {empirical_p:.4f}"
+)
+
+
+# =============================================================================
+# 19. SAVE Y-SCRAMBLING RESULTS
+# =============================================================================
+
+yscramble_table = pd.DataFrame({
+
+    "Iteration":
+        np.arange(
+            1,
+            N_Y_SCRAMBLES + 1
+        ),
+
+    "Scrambled_R2":
+        yscramble_r2,
+
+    "Scrambled_RMSE":
+        yscramble_rmse,
+
+    "Scrambled_MAE":
+        yscramble_mae
+})
+
+yscramble_table.to_csv(
+    OUTPUT_FOLDER /
+    "Y_Scrambling_Results.csv",
+    index=False
+)
+
+
+# =============================================================================
+# 20. Y-SCRAMBLING HISTOGRAM
+# =============================================================================
+
+plt.figure(figsize=(8, 6))
+
+plt.hist(
+    yscramble_r2,
+    bins=20,
+    edgecolor="black",
+    alpha=0.75
+)
+
+plt.axvline(
+    cv_r2,
+    linewidth=3,
+    label=f"Observed LOOCV R² = {cv_r2:.3f}"
+)
+
+plt.xlabel(
+    "Y-scrambled R²",
+    fontsize=12
+)
+
+plt.ylabel(
+    "Frequency",
+    fontsize=12
+)
+
+plt.title(
+    "100-iteration Y-scrambling validation",
+    fontsize=14
+)
+
+plt.legend()
+
+plt.tight_layout()
+
+plt.savefig(
+    OUTPUT_FOLDER /
+    "Y_Scrambling_Histogram.png",
+    dpi=600,
+    bbox_inches="tight"
+)
+
+plt.close()
+
+
+# =============================================================================
+# 21. Y-SCRAMBLING DISTRIBUTION PLOT
+# =============================================================================
+
+plt.figure(figsize=(7, 6))
+
+plt.scatter(
+    yscramble_r2,
+    yscramble_rmse,
+    s=45,
+    alpha=0.7,
+    edgecolor="black"
+)
+
+plt.scatter(
+    cv_r2,
+    cv_rmse,
+    s=150,
+    marker="*",
+    edgecolor="black",
+    linewidth=1.2,
+    label="Observed LOOCV model"
+)
+
+plt.xlabel(
+    "R²",
+    fontsize=12
+)
+
+plt.ylabel(
+    "RMSE",
+    fontsize=12
+)
+
+plt.title(
+    "Y-scrambling model performance",
+    fontsize=14
+)
+
+plt.legend()
+
+plt.tight_layout()
+
+plt.savefig(
+    OUTPUT_FOLDER /
+    "Y_Scrambling_Performance.png",
+    dpi=600,
+    bbox_inches="tight"
+)
+
+plt.close()
+
+
+# =============================================================================
+# 22. FINAL MODEL PREDICTIONS
+# =============================================================================
+
+final_model = create_symbolic_model(
+    random_state=RANDOM_STATE
+)
+
+final_model.fit(
+    X,
+    y
+)
+
+final_predictions = final_model.predict(X)
+
+final_equation = str(
+    final_model._program
+)
+
+
+# =============================================================================
+# 23. FINAL PREDICTION TABLE
+# =============================================================================
+
+final_table = df.copy()
+
+final_table[
+    "Predicted_Consensus_Score"
+] = final_predictions
+
+final_table[
+    "Residual"
+] = (
+    final_table[TARGET]
+    -
+    final_table["Predicted_Consensus_Score"]
+)
+
+final_table.to_csv(
+    OUTPUT_FOLDER /
+    "Final_Symbolic_Model_Predictions.csv",
+    index=False
+)
+
+
+# =============================================================================
+# 24. FINAL EQUATION
+# =============================================================================
+
+with open(
+    OUTPUT_FOLDER /
+    "Final_Symbolic_Equation.txt",
+    "w",
+    encoding="utf-8"
+) as f:
+
+    f.write(
+        "Final symbolic regression equation\n"
+        "===================================\n\n"
+    )
+
+    f.write(final_equation)
+
+
+# =============================================================================
+# 25. FINAL MODEL PLOT
+# =============================================================================
+
+plt.figure(figsize=(7, 7))
+
+plt.scatter(
+    y,
+    final_predictions,
+    s=75,
+    alpha=0.8,
+    edgecolor="black"
+)
+
+minimum = min(
+    y.min(),
+    final_predictions.min()
+)
+
+maximum = max(
+    y.max(),
+    final_predictions.max()
+)
+
+plt.plot(
+    [minimum, maximum],
+    [minimum, maximum],
+    "--",
+    linewidth=2
+)
+
+plt.xlabel(
+    "Observed consensus score",
+    fontsize=12
+)
+
+plt.ylabel(
+    "Predicted consensus score",
+    fontsize=12
+)
+
+plt.title(
+    "Final symbolic regression model",
+    fontsize=14
+)
+
+plt.tight_layout()
+
+plt.savefig(
+    OUTPUT_FOLDER /
+    "Final_Model_Observed_vs_Predicted.png",
+    dpi=600,
+    bbox_inches="tight"
+)
+
+plt.close()
+
+
+# =============================================================================
+# 26. FINAL MODEL SUMMARY
+# =============================================================================
+
+summary = f"""
+
+=======================================================================
+KEAP1 SYMBOLIC REGRESSION CONSENSUS MODEL
+=======================================================================
+
+Dataset
+-------
+Number of compounds       : {len(df)}
+
+Features
+--------
+{", ".join(FEATURES)}
+
+Target
+------
+{TARGET}
+
+Full-dataset performance
+------------------------
+R²                         : {training_r2:.4f}
+RMSE                       : {training_rmse:.4f}
+MAE                        : {training_mae:.4f}
+
+LOOCV performance
+-----------------
+R²                         : {cv_r2:.4f}
+RMSE                       : {cv_rmse:.4f}
+MAE                        : {cv_mae:.4f}
+
+Y-scrambling
+------------
+Iterations                 : {N_Y_SCRAMBLES}
+
+Observed LOOCV R²          : {cv_r2:.4f}
+
+Mean scrambled R²          : {mean_scrambled_r2:.4f}
+SD scrambled R²            : {std_scrambled_r2:.4f}
+
+Mean scrambled RMSE        : {mean_scrambled_rmse:.4f}
+SD scrambled RMSE          : {std_scrambled_rmse:.4f}
+
+Mean scrambled MAE         : {mean_scrambled_mae:.4f}
+SD scrambled MAE           : {std_scrambled_mae:.4f}
+
+Empirical p-value          : {empirical_p:.4f}
+
+Discovered equation
+-------------------
+{final_equation}
+
+Interpretation
+--------------
+The symbolic regression model was developed as an interpretable,
+data-driven component of the KEAP1 compound-prioritisation framework.
+
+The model relates structural and energetic descriptors to the consensus
+ranking score and is intended to provide an interpretable ranking rule.
+
+Because the training dataset is relatively small, the resulting equation
+should be regarded as exploratory and hypothesis-generating rather than
+as an independent demonstration of biological activity.
+
+The final compound prioritisation was based on multiple complementary
+evidence streams, including docking, MM-GBSA, GNN affinity prediction,
+symbolic-regression scoring, specificity assessment, BBB permeability,
+and ADMET/toxicity profiling.
+
+The highest-priority compound was subsequently selected for molecular
+dynamics simulation.
+
+=======================================================================
+"""
+
+with open(
+    OUTPUT_FOLDER /
+    "Symbolic_Regression_Model_Summary.txt",
+    "w",
+    encoding="utf-8"
+) as f:
+
+    f.write(summary)
+
+
+# =============================================================================
+# 27. FINAL CONSOLE SUMMARY
+# =============================================================================
+
+logger.info("=" * 80)
+logger.info("ANALYSIS COMPLETED")
+logger.info("=" * 80)
+
+logger.info(f"Dataset size       : {len(df)}")
+logger.info(f"Training R²        : {training_r2:.3f}")
+logger.info(f"LOOCV R²           : {cv_r2:.3f}")
+logger.info(f"LOOCV RMSE         : {cv_rmse:.3f}")
+logger.info(f"LOOCV MAE          : {cv_mae:.3f}")
+
+logger.info(
+    f"Y-scrambled R²     : "
+    f"{mean_scrambled_r2:.3f} ± "
+    f"{std_scrambled_r2:.3f}"
+)
+
+logger.info(
+    f"Empirical p-value  : "
+    f"{empirical_p:.4f}"
+)
+
+logger.info("")
+logger.info("FINAL SYMBOLIC EQUATION:")
+logger.info(final_equation)
+
+logger.info("")
+logger.info("Generated files:")
+
+generated_files = [
+    "Discovered_Symbolic_Equation.txt",
+    "Final_Symbolic_Equation.txt",
+    "LOOCV_Predictions.csv",
+    "Final_Symbolic_Model_Predictions.csv",
+    "Y_Scrambling_Results.csv",
+    "LOOCV_Observed_vs_Predicted.png",
+    "LOOCV_Residuals.png",
+    "Y_Scrambling_Histogram.png",
+    "Y_Scrambling_Performance.png",
+    "Final_Model_Observed_vs_Predicted.png",
+    "Symbolic_Regression_Model_Summary.txt"
+]
+
+for filename in generated_files:
+    logger.info(f"  - {filename}")
+
+logger.info("=" * 80)
