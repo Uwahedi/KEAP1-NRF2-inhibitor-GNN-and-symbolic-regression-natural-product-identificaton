@@ -1,0 +1,119 @@
+Supplementary Code S2
+Protein–Ligand Interaction Analysis, Ligand Burial, Interaction Fingerprinting, and Ligand Efficiency Calculations
+
+Purpose
+This script performs post-docking structural analyses for the top-ranked KEAP1–ligand complexes.
+
+The following analyses are performed:
+
+1. Ligand burial using solvent accessible surface area (SASA)
+2. Protein–ligand interaction fingerprinting
+3. Ligand efficiency calculation
+4. Export of all calculated descriptors
+
+Input
+Protein–ligand complex PDB files
+
+Output
+Supplementary_Complete_Analysis.csv
+
+Software
+Python 3.11
+Biopython >=1.85
+RDKit >=2024
+Pandas >=2.2
+
+Author
+Umair Wahedi et al.
+
+Notes
+The Shrake–Rupley algorithm implemented in Bio.PDB is used for SASA
+calculation.
+
+Burial percentage is calculated as
+
+%Burial =
+((Estimated SASAunbound − SASAbound) /
+ Estimated SASAunbound) × 100
+
+Estimated unbound SASA is approximated as
+15 Å² × number of ligand atoms.
+
+This script is intended for comparative analysis of docked complexes and
+should not be interpreted as an absolute measure of solvent exposure.
+======================================================================
+import csv
+import logging
+import math
+import platform
+import sys
+import time
+from pathlib import Path
+import Bio
+import pandas as pd
+from Bio.PDB import PDBParser
+from Bio.PDB import SASA
+from rdkit import Chem
+###############################################################################
+Configuration
+###############################################################################
+WORKING_DIRECTORY = Path.cwd()
+OUTPUT_FILE = WORKING_DIRECTORY / "Supplementary_Complete_Analysis.csv"
+DISTANCE_CUTOFF = 4.5
+ESTIMATED_SASA_PER_ATOM = 15.0
+KEY_RESIDUES = [
+    "VAL97",
+    "VAL144",
+    "VAL191",
+    "VAL193",
+    "ARG162",
+    "ASN61",
+    "TYR13"
+]
+###############################################################################
+# MM-GBSA Scores
+###############################################################################
+MMGBSA_SCORES = {
+    "ZINC000008299219": -94.78,
+    "ZINC000008297706": -88.50,
+    "ZINC000006772439": -82.10,
+    "ZINC000008299306": -79.40,
+    "ZINC000012659716": -75.20
+}
+###############################################################################
+Logging
+###############################################################################
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+logger = logging.getLogger(__name__)
+logger.info("=" * 70)
+logger.info("Supplementary Code S2")
+logger.info("=" * 70)
+logger.info(f"Python Version     : {platform.python_version()}")
+logger.info(f"Biopython Version  : {Bio.__version__}")
+logger.info(f"Working Directory  : {WORKING_DIRECTORY}")
+logger.info(f"Distance Cutoff    : {DISTANCE_CUTOFF} Å")
+logger.info(f"SASA Method        : Shrake–Rupley")
+###############################################################################
+Helper Function
+###############################################################################
+def calculate_distance(atom1, atom2):
+    """
+    Calculate Euclidean distance between two atoms.
+    Parameters
+    ----------
+    atom1 : tuple
+    atom2 : tuple
+    Returns
+    -------
+    float
+    """
+    return math.sqrt(
+        sum(
+            (a - b) ** 2
+            for a, b in zip(atom1, atom2)
+        )
+    )
+
